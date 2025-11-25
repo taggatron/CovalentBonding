@@ -217,22 +217,18 @@ function updateBonds() {
         const availableB = b.electrons.filter((e) => !usedElectronIds.has(e.id));
         if (availableA.length === 0 || availableB.length === 0) break;
 
-        // Instead of always taking the closest-angle electron (which
-        // creates a fixed bonding order), consider the best few by
-        // angle, then randomly pick among them so that any available
-        // carbon electron can participate in a bond over time.
-        const MAX_CANDIDATES = 3;
+        // For C–O and O–O, we want robust double bonds: always pick
+        // the electrons that are best aligned with the internuclear
+        // axis, not randomly, to get two clean shared pairs.
         const sortedA = availableA
           .map((e) => ({ e, score: Math.abs(normalizeAngle(e.baseAngle - baseAngleA)) }))
-          .sort((p, q) => p.score - q.score)
-          .slice(0, Math.min(MAX_CANDIDATES, availableA.length));
+          .sort((p, q) => p.score - q.score);
         const sortedB = availableB
           .map((e) => ({ e, score: Math.abs(normalizeAngle(e.baseAngle - baseAngleB)) }))
-          .sort((p, q) => p.score - q.score)
-          .slice(0, Math.min(MAX_CANDIDATES, availableB.length));
+          .sort((p, q) => p.score - q.score);
 
-        const eA = sortedA[Math.floor(Math.random() * sortedA.length)].e;
-        const eB = sortedB[Math.floor(Math.random() * sortedB.length)].e;
+        const eA = sortedA[0].e;
+        const eB = sortedB[0].e;
 
         const posA = electronPosition(a, eA);
         const posB = electronPosition(b, eB);
@@ -257,7 +253,7 @@ function updateBonds() {
 }
 
 function reorientBondElectrons() {
-  if (!needsBondReorientation || bonds.length === 0) return;
+  if (bonds.length === 0) return;
 
   bonds.forEach((b) => {
     const a = atoms.find((x) => x.id === b.aId);
@@ -381,14 +377,58 @@ function orientElectronsTowardNeighbors() {
     if (d > ELECTRON_ORIENT_RANGE) return;
 
     const axisAngle = Math.atan2(other.y - dragged.y, other.x - dragged.x);
+    const draggedIsOxygen = dragged.element.symbol === 'O';
+    const otherIsCO = other.element.symbol === 'C' || other.element.symbol === 'O';
 
-    dragged.electrons.forEach((e) => {
-      const current = normalizeAngle(e.baseAngle + e.angleOffset);
-      let delta = normalizeAngle(axisAngle - current);
-      // Small step toward the target axis
-      delta *= ELECTRON_ORIENT_SPEED;
-      e.angleOffset = normalizeAngle(e.angleOffset + delta);
-    });
+    if (draggedIsOxygen && otherIsCO) {
+      // Oxygen near C or O: tilt TWO electrons toward the neighbor
+      // with a slight angular separation to hint at a double bond.
+      const sorted = dragged.electrons
+        .map((e) => {
+          const current = normalizeAngle(e.baseAngle + e.angleOffset);
+          const score = Math.abs(normalizeAngle(axisAngle - current));
+          return { e, current, score };
+        })
+        .sort((p, q) => p.score - q.score);
+
+      const first = sorted[0];
+      const second = sorted[1] || null;
+
+      if (first) {
+        let delta1 = normalizeAngle(axisAngle - first.current);
+        delta1 *= ELECTRON_ORIENT_SPEED;
+        first.e.angleOffset = normalizeAngle(first.e.angleOffset + delta1);
+      }
+
+      if (second) {
+        // Offset the second electron slightly around the axis to
+        // create an alternating/double-bond look.
+        const offsetAxis = axisAngle + (second.score >= 0 ? 0.3 : -0.3);
+        let delta2 = normalizeAngle(offsetAxis - second.current);
+        delta2 *= ELECTRON_ORIENT_SPEED;
+        second.e.angleOffset = normalizeAngle(second.e.angleOffset + delta2);
+      }
+    } else {
+      // Default: only the single closest electron rotates toward
+      // the neighbor, keeping the rest stable.
+      let bestElectron = null;
+      let bestScore = Infinity;
+      dragged.electrons.forEach((e) => {
+        const current = normalizeAngle(e.baseAngle + e.angleOffset);
+        const score = Math.abs(normalizeAngle(axisAngle - current));
+        if (score < bestScore) {
+          bestScore = score;
+          bestElectron = e;
+        }
+      });
+
+      if (bestElectron) {
+        const current = normalizeAngle(bestElectron.baseAngle + bestElectron.angleOffset);
+        let delta = normalizeAngle(axisAngle - current);
+        delta *= ELECTRON_ORIENT_SPEED;
+        bestElectron.angleOffset = normalizeAngle(bestElectron.angleOffset + delta);
+      }
+    }
   });
 }
 
