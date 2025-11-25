@@ -180,6 +180,11 @@ function distance(a, b) {
 function updateBonds() {
   bonds = [];
   const maxPairDistance = 24;
+
+  // Track which electrons are already engaged in bonds so we can
+  // respect valence limits (e.g., carbon can use all 4 electrons).
+  const usedElectronIds = new Set();
+
   for (let i = 0; i < atoms.length; i++) {
     for (let j = i + 1; j < atoms.length; j++) {
       const a = atoms[i];
@@ -187,12 +192,26 @@ function updateBonds() {
       const baseAngleA = Math.atan2(b.y - a.y, b.x - a.x);
       const baseAngleB = Math.atan2(a.y - b.y, a.x - b.x);
 
-      const candidatesA = a.electrons.map((e) => ({ atom: a, e })).sort(
-        (p, q) => Math.abs(normalizeAngle(p.e.baseAngle - baseAngleA)) - Math.abs(normalizeAngle(q.e.baseAngle - baseAngleA))
-      );
-      const candidatesB = b.electrons.map((e) => ({ atom: b, e })).sort(
-        (p, q) => Math.abs(normalizeAngle(p.e.baseAngle - baseAngleB)) - Math.abs(normalizeAngle(q.e.baseAngle - baseAngleB))
-      );
+      // Find the best available (unused) electron on each atom that
+      // points roughly towards the other atom along the bond axis.
+      const availableA = a.electrons.filter((e) => !usedElectronIds.has(e.id));
+      const availableB = b.electrons.filter((e) => !usedElectronIds.has(e.id));
+      if (availableA.length === 0 || availableB.length === 0) continue;
+
+      const candidatesA = availableA
+        .map((e) => ({ atom: a, e }))
+        .sort(
+          (p, q) =>
+            Math.abs(normalizeAngle(p.e.baseAngle - baseAngleA)) -
+            Math.abs(normalizeAngle(q.e.baseAngle - baseAngleA))
+        );
+      const candidatesB = availableB
+        .map((e) => ({ atom: b, e }))
+        .sort(
+          (p, q) =>
+            Math.abs(normalizeAngle(p.e.baseAngle - baseAngleB)) -
+            Math.abs(normalizeAngle(q.e.baseAngle - baseAngleB))
+        );
 
       const eA = candidatesA[0].e;
       const eB = candidatesB[0].e;
@@ -201,12 +220,14 @@ function updateBonds() {
       const posB = electronPosition(b, eB);
       if (distance(posA, posB) <= maxPairDistance) {
         bonds.push({
-          id: `${a.id}-${b.id}`,
+          id: `${a.id}-${b.id}-${eA.id}-${eB.id}`,
           aId: a.id,
           bId: b.id,
           eAId: eA.id,
           eBId: eB.id,
         });
+        usedElectronIds.add(eA.id);
+        usedElectronIds.add(eB.id);
       }
     }
   }
@@ -229,6 +250,69 @@ function reorientBondElectrons() {
 
     eA.angleOffset = normalizeAngle(angleAC - eA.baseAngle);
     eB.angleOffset = normalizeAngle(angleCA - eB.baseAngle);
+  });
+
+  // After aligning bonding electrons, redistribute all other electrons
+  // on each involved atom so that they are evenly spaced (max arc).
+  const involvedAtomIds = new Set();
+  bonds.forEach((b) => {
+    involvedAtomIds.add(b.aId);
+    involvedAtomIds.add(b.bId);
+  });
+
+  involvedAtomIds.forEach((atomId) => {
+    const atom = atoms.find((a) => a.id === atomId);
+    if (!atom) return;
+
+    const bondedElectronIds = new Set();
+    bonds.forEach((b) => {
+      if (b.aId === atomId) bondedElectronIds.add(b.eAId);
+      if (b.bId === atomId) bondedElectronIds.add(b.eBId);
+    });
+
+    const bondedElectrons = atom.electrons.filter((e) => bondedElectronIds.has(e.id));
+    const loneElectrons = atom.electrons.filter((e) => !bondedElectronIds.has(e.id));
+
+    if (loneElectrons.length === 0) return;
+
+    // Compute the current angle of each bonded electron and find the largest gap
+    const bondedAngles = bondedElectrons.map((e) => {
+      return normalizeAngle(e.baseAngle + e.angleOffset);
+    });
+
+    bondedAngles.sort((a, b) => a - b);
+
+    let startAngle;
+    if (bondedAngles.length === 0) {
+      startAngle = 0;
+    } else if (bondedAngles.length === 1) {
+      // Place lone electrons on the opposite side of the bond
+      startAngle = normalizeAngle(bondedAngles[0] + Math.PI);
+    } else {
+      // Find largest gap between consecutive bonded electrons on the circle
+      let maxGap = -Infinity;
+      let bestStart = bondedAngles[0];
+      for (let i = 0; i < bondedAngles.length; i++) {
+        const a1 = bondedAngles[i];
+        const a2 = bondedAngles[(i + 1) % bondedAngles.length];
+        let gap = a2 - a1;
+        if (i === bondedAngles.length - 1) {
+          gap = (bondedAngles[0] + Math.PI * 2) - a1;
+        }
+        if (gap > maxGap) {
+          maxGap = gap;
+          bestStart = a1;
+        }
+      }
+      // Start in the middle of the largest gap
+      startAngle = normalizeAngle(bestStart + maxGap / 2);
+    }
+
+    const loneStep = (Math.PI * 2) / loneElectrons.length;
+    loneElectrons.forEach((e, index) => {
+      const targetAngle = normalizeAngle(startAngle + index * loneStep);
+      e.angleOffset = normalizeAngle(targetAngle - e.baseAngle);
+    });
   });
 
   needsBondReorientation = false;
