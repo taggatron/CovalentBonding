@@ -19,6 +19,7 @@ let dragOffset = { x: 0, y: 0 };
 let showForces = false;
 let nextId = 1;
 let needsBondReorientation = false;
+let activePointerId = null;
 
 function createLayout() {
   const app = document.getElementById('app');
@@ -211,6 +212,28 @@ function updateBonds() {
   }
 }
 
+function reorientBondElectrons() {
+  if (!needsBondReorientation || bonds.length === 0) return;
+
+  bonds.forEach((b) => {
+    const a = atoms.find((x) => x.id === b.aId);
+    const c = atoms.find((x) => x.id === b.bId);
+    if (!a || !c) return;
+
+    const eA = a.electrons.find((e) => e.id === b.eAId);
+    const eB = c.electrons.find((e) => e.id === b.eBId);
+    if (!eA || !eB) return;
+
+    const angleAC = Math.atan2(c.y - a.y, c.x - a.x);
+    const angleCA = Math.atan2(a.y - c.y, a.x - c.x);
+
+    eA.angleOffset = normalizeAngle(angleAC - eA.baseAngle);
+    eB.angleOffset = normalizeAngle(angleCA - eB.baseAngle);
+  });
+
+  needsBondReorientation = false;
+}
+
 function normalizeAngle(a) {
   while (a > Math.PI) a -= Math.PI * 2;
   while (a < -Math.PI) a += Math.PI * 2;
@@ -236,6 +259,10 @@ function render() {
   gradientBg.addColorStop(1, 'rgba(0,0,0,0.9)');
   ctx.fillStyle = gradientBg;
   ctx.fillRect(0, 0, w, h);
+
+  // Reorient electrons on newly formed or adjusted bonds so that
+  // nucleus – covalent pair – nucleus lies along a straight line.
+  reorientBondElectrons();
 
   updateBonds();
 
@@ -368,7 +395,7 @@ function pickAtom(x, y) {
 }
 
 function setupCanvasInteractions() {
-  canvas.addEventListener('mousedown', (e) => {
+  canvas.addEventListener('pointerdown', (e) => {
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -377,11 +404,13 @@ function setupCanvasInteractions() {
       draggingAtomId = atom.id;
       dragOffset.x = x - atom.x;
       dragOffset.y = y - atom.y;
+      activePointerId = e.pointerId;
+      canvas.setPointerCapture(e.pointerId);
     }
   });
 
-  window.addEventListener('mousemove', (e) => {
-    if (!draggingAtomId) return;
+  canvas.addEventListener('pointermove', (e) => {
+    if (!draggingAtomId || e.pointerId !== activePointerId) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -392,10 +421,21 @@ function setupCanvasInteractions() {
     }
   });
 
-  window.addEventListener('mouseup', () => {
-    if (draggingAtomId != null) {
+  canvas.addEventListener('pointerup', (e) => {
+    if (e.pointerId === activePointerId && draggingAtomId != null) {
       draggingAtomId = null;
+      activePointerId = null;
       needsBondReorientation = true;
+      canvas.releasePointerCapture(e.pointerId);
+    }
+  });
+
+  canvas.addEventListener('pointercancel', (e) => {
+    if (e.pointerId === activePointerId) {
+      draggingAtomId = null;
+      activePointerId = null;
+      needsBondReorientation = true;
+      canvas.releasePointerCapture(e.pointerId);
     }
   });
 
