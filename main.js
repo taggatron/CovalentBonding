@@ -21,6 +21,11 @@ let nextId = 1;
 let needsBondReorientation = false;
 let activePointerId = null;
 
+// Controls how strongly electrons "turn" toward nearby atoms when
+// an atom is being dragged.
+const ELECTRON_ORIENT_SPEED = 0.08;
+const ELECTRON_ORIENT_RANGE = 80; // px around valence shell
+
 function createLayout() {
   const app = document.getElementById('app');
 
@@ -219,23 +224,22 @@ function updateBonds() {
         const availableB = b.electrons.filter((e) => !usedElectronIds.has(e.id));
         if (availableA.length === 0 || availableB.length === 0) break;
 
-        const candidatesA = availableA
-          .map((e) => ({ atom: a, e }))
-          .sort(
-            (p, q) =>
-              Math.abs(normalizeAngle(p.e.baseAngle - baseAngleA)) -
-              Math.abs(normalizeAngle(q.e.baseAngle - baseAngleA))
-          );
-        const candidatesB = availableB
-          .map((e) => ({ atom: b, e }))
-          .sort(
-            (p, q) =>
-              Math.abs(normalizeAngle(p.e.baseAngle - baseAngleB)) -
-              Math.abs(normalizeAngle(q.e.baseAngle - baseAngleB))
-          );
+        // Instead of always taking the closest-angle electron (which
+        // creates a fixed bonding order), consider the best few by
+        // angle, then randomly pick among them so that any available
+        // carbon electron can participate in a bond over time.
+        const MAX_CANDIDATES = 3;
+        const sortedA = availableA
+          .map((e) => ({ e, score: Math.abs(normalizeAngle(e.baseAngle - baseAngleA)) }))
+          .sort((p, q) => p.score - q.score)
+          .slice(0, Math.min(MAX_CANDIDATES, availableA.length));
+        const sortedB = availableB
+          .map((e) => ({ e, score: Math.abs(normalizeAngle(e.baseAngle - baseAngleB)) }))
+          .sort((p, q) => p.score - q.score)
+          .slice(0, Math.min(MAX_CANDIDATES, availableB.length));
 
-        const eA = candidatesA[0].e;
-        const eB = candidatesB[0].e;
+        const eA = sortedA[Math.floor(Math.random() * sortedA.length)].e;
+        const eB = sortedB[Math.floor(Math.random() * sortedB.length)].e;
 
         const posA = electronPosition(a, eA);
         const posB = electronPosition(b, eB);
@@ -373,6 +377,28 @@ function electronPosition(atom, e) {
   return { x: ex, y: ey };
 }
 
+function orientElectronsTowardNeighbors() {
+  if (!draggingAtomId) return;
+  const dragged = atoms.find((a) => a.id === draggingAtomId);
+  if (!dragged) return;
+
+  atoms.forEach((other) => {
+    if (other.id === dragged.id) return;
+    const d = distance(dragged, other);
+    if (d > ELECTRON_ORIENT_RANGE) return;
+
+    const axisAngle = Math.atan2(other.y - dragged.y, other.x - dragged.x);
+
+    dragged.electrons.forEach((e) => {
+      const current = normalizeAngle(e.baseAngle + e.angleOffset);
+      let delta = normalizeAngle(axisAngle - current);
+      // Small step toward the target axis
+      delta *= ELECTRON_ORIENT_SPEED;
+      e.angleOffset = normalizeAngle(e.angleOffset + delta);
+    });
+  });
+}
+
 function render() {
   if (!ctx) return;
   const w = canvas.width / window.devicePixelRatio;
@@ -385,6 +411,11 @@ function render() {
   gradientBg.addColorStop(1, 'rgba(0,0,0,0.9)');
   ctx.fillStyle = gradientBg;
   ctx.fillRect(0, 0, w, h);
+
+  // While dragging an atom, gently rotate its electrons so they
+  // orient toward nearby atoms/electrons to give a sense of
+  // dynamic electron-cloud interaction before the bond snaps.
+  orientElectronsTowardNeighbors();
 
   // Reorient electrons on newly formed or adjusted bonds so that
   // nucleus – covalent pair – nucleus lies along a straight line.
