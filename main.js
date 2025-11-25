@@ -297,9 +297,9 @@ function reorientBondElectrons() {
     });
 
     const bondedElectrons = atom.electrons.filter((e) => bondedElectronIds.has(e.id));
-    const loneElectrons = atom.electrons.filter((e) => !bondedElectronIds.has(e.id));
+  const loneElectrons = atom.electrons.filter((e) => !bondedElectronIds.has(e.id));
 
-    if (loneElectrons.length === 0) return;
+  if (loneElectrons.length === 0) return;
 
     // Compute the current angle of each bonded electron and find the largest gap
     const bondedAngles = bondedElectrons.map((e) => {
@@ -335,10 +335,26 @@ function reorientBondElectrons() {
     }
 
     const loneStep = (Math.PI * 2) / loneElectrons.length;
-    loneElectrons.forEach((e, index) => {
-      const targetAngle = normalizeAngle(startAngle + index * loneStep);
-      e.angleOffset = normalizeAngle(targetAngle - e.baseAngle);
-    });
+
+    // If there is an odd lone electron (e.g. after a single O–O
+    // bond where one of oxygen's electrons is still unpaired), try
+    // to "pair it up" by putting it directly opposite the bonded
+    // region, then distribute the rest around that axis.
+    if (loneElectrons.length % 2 === 1 && bondedElectrons.length > 0) {
+      const axis = startAngle;
+      // Put one electron on the axis and distribute remaining ones
+      // symmetrically around it.
+      loneElectrons.forEach((e, index) => {
+        const offsetIndex = index - (loneElectrons.length - 1) / 2;
+        const targetAngle = normalizeAngle(axis + offsetIndex * loneStep);
+        e.angleOffset = normalizeAngle(targetAngle - e.baseAngle);
+      });
+    } else {
+      loneElectrons.forEach((e, index) => {
+        const targetAngle = normalizeAngle(startAngle + index * loneStep);
+        e.angleOffset = normalizeAngle(targetAngle - e.baseAngle);
+      });
+    }
   });
 
   needsBondReorientation = false;
