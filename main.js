@@ -4,7 +4,7 @@ const ELEMENTS = [
   { symbol: 'H', name: 'Hydrogen', Z: 1, valence: 1, color: '#38bdf8' },
   { symbol: 'C', name: 'Carbon', Z: 6, valence: 4, color: '#f97316' },
   { symbol: 'N', name: 'Nitrogen', Z: 7, valence: 3, color: '#22c55e' },
-  { symbol: 'O', name: 'Oxygen', Z: 8, valence: 2, color: '#a855f7' },
+  { symbol: 'O', name: 'Oxygen', Z: 8, valence: 6, color: '#a855f7' },
 ];
 
 const canvas = document.createElement('canvas');
@@ -190,7 +190,7 @@ function distance(a, b) {
 
 function updateBonds() {
   bonds = [];
-  const maxPairDistance = 24;
+  const maxPairDistance = 30;
 
   // Track which electrons are already engaged in bonds so we can
   // respect valence limits (e.g., carbon can use all 4 electrons).
@@ -208,18 +208,31 @@ function updateBonds() {
         (a.element.symbol === 'C' && b.element.symbol === 'O') ||
         (a.element.symbol === 'O' && b.element.symbol === 'C');
       const isOOPair = a.element.symbol === 'O' && b.element.symbol === 'O';
+      const isCHPair =
+        (a.element.symbol === 'C' && b.element.symbol === 'H') ||
+        (a.element.symbol === 'H' && b.element.symbol === 'C');
+
+      // Default desired bond pairs between two atoms. C–O and O–O
+      // can form double bonds; C–H stays as a single bond but we
+      // will happily form up to four separate C–H bonds overall as
+      // long as carbon still has spare electrons.
       const desiredPairs = isCOPair || isOOPair ? 2 : 1;
 
       // Attempt to create up to desiredPairs separate electron pairs
       // for this atom pair, respecting available valence electrons.
       for (let pairIndex = 0; pairIndex < desiredPairs; pairIndex++) {
-        const availableA = a.electrons.filter((e) => !usedElectronIds.has(e.id));
-        const availableB = b.electrons.filter((e) => !usedElectronIds.has(e.id));
+        let availableA = a.electrons.filter((e) => !usedElectronIds.has(e.id));
+        let availableB = b.electrons.filter((e) => !usedElectronIds.has(e.id));
         if (availableA.length === 0 || availableB.length === 0) break;
 
         // For C–O and O–O, we want robust double bonds: always pick
         // the electrons that are best aligned with the internuclear
-        // axis, not randomly, to get two clean shared pairs.
+        // axis and explicitly steer the second pair into place.
+        // Special case: when bonding carbon with hydrogen we want
+        // hydrogens to grab any remaining carbon electrons, so we
+        // favour choosing the electron on carbon that is closest to
+        // the approaching hydrogen, and the hydrogen electron
+        // nearest to carbon.
         const sortedA = availableA
           .map((e) => ({ e, score: Math.abs(normalizeAngle(e.baseAngle - baseAngleA)) }))
           .sort((p, q) => p.score - q.score);
@@ -232,7 +245,17 @@ function updateBonds() {
 
         const posA = electronPosition(a, eA);
         const posB = electronPosition(b, eB);
-        if (distance(posA, posB) <= maxPairDistance) {
+        const withinRange = distance(posA, posB) <= maxPairDistance;
+
+        if (!withinRange && pairIndex === 0) {
+          // If even the first candidate pair is too far, no bond.
+          break;
+        }
+
+        // For first pair in a double bond, enforce distance; for
+        // the second pair on C–O / O–O, allow creation as long as
+        // atoms are generally close enough.
+        if (withinRange || (pairIndex === 1 && (isCOPair || isOOPair))) {
           bonds.push({
             id: `${a.id}-${b.id}-${eA.id}-${eB.id}`,
             aId: a.id,
@@ -243,8 +266,6 @@ function updateBonds() {
           usedElectronIds.add(eA.id);
           usedElectronIds.add(eB.id);
         } else {
-          // If even the best candidate pair is too far, stop
-          // trying further pairs for this atom pair.
           break;
         }
       }
@@ -255,20 +276,101 @@ function updateBonds() {
 function reorientBondElectrons() {
   if (bonds.length === 0) return;
 
+  // Group bonds by atom pair so we can treat double bonds specially.
+  const groupedByPair = new Map();
   bonds.forEach((b) => {
-    const a = atoms.find((x) => x.id === b.aId);
-    const c = atoms.find((x) => x.id === b.bId);
-    if (!a || !c) return;
+    const key = b.aId < b.bId ? `${b.aId}-${b.bId}` : `${b.bId}-${b.aId}`;
+    if (!groupedByPair.has(key)) groupedByPair.set(key, []);
+    groupedByPair.get(key).push(b);
+  });
 
-    const eA = a.electrons.find((e) => e.id === b.eAId);
-    const eB = c.electrons.find((e) => e.id === b.eBId);
-    if (!eA || !eB) return;
+  groupedByPair.forEach((pairBonds) => {
+    const b0 = pairBonds[0];
+    const a = atoms.find((x) => x.id === b0.aId);
+    const c = atoms.find((x) => x.id === b0.bId);
+    if (!a || !c) return;
 
     const angleAC = Math.atan2(c.y - a.y, c.x - a.x);
     const angleCA = Math.atan2(a.y - c.y, a.x - c.x);
 
-    eA.angleOffset = normalizeAngle(angleAC - eA.baseAngle);
-    eB.angleOffset = normalizeAngle(angleCA - eB.baseAngle);
+    const isCOorOO =
+      (a.element.symbol === 'C' && c.element.symbol === 'O') ||
+      (a.element.symbol === 'O' && c.element.symbol === 'C') ||
+      (a.element.symbol === 'O' && c.element.symbol === 'O');
+
+    // For C=O and O=O we want exactly two shared
+    // electron pairs in the double-bond region. If more
+    // than two bonds have been created numerically for
+    // this pair (e.g. due to geometry/distance quirks),
+    // we still only treat the closest two as the visual
+    // double bond and push any others back toward the
+    // lone‑pair side so they don't "sit" in between.
+    if (isCOorOO && pairBonds.length >= 2) {
+      // Arrange two electron pairs symmetrically around bond axis
+      // to give a clear double-bond look.
+      const offset = 0.25; // radians
+      const anglesA = [angleAC - offset, angleAC + offset];
+      const anglesC = [angleCA + offset, angleCA - offset];
+
+      // Sort bonds for this pair by how close their current
+      // electron positions already are to the ideal double‑bond
+      // directions, then pick the best two as the double bond.
+      const scored = pairBonds.map((b) => {
+        const eA = a.electrons.find((e) => e.id === b.eAId);
+        const eC = c.electrons.find((e) => e.id === b.eBId);
+        if (!eA || !eC) {
+          return { b, score: Number.POSITIVE_INFINITY };
+        }
+        const angA = normalizeAngle(eA.baseAngle + eA.angleOffset);
+        const angC = normalizeAngle(eC.baseAngle + eC.angleOffset);
+        const targetA = angleAC;
+        const targetC = angleCA;
+        const score =
+          Math.abs(normalizeAngle(angA - targetA)) +
+          Math.abs(normalizeAngle(angC - targetC));
+        return { b, score };
+      });
+
+      scored.sort((p, q) => p.score - q.score);
+      const firstTwo = scored.slice(0, 2).map((s) => s.b);
+
+      firstTwo.forEach((b, idx) => {
+        const eA = a.electrons.find((e) => e.id === b.eAId);
+        const eC = c.electrons.find((e) => e.id === b.eBId);
+        if (!eA || !eC) return;
+
+        eA.angleOffset = normalizeAngle(anglesA[idx] - eA.baseAngle);
+        eC.angleOffset = normalizeAngle(anglesC[idx] - eC.baseAngle);
+      });
+
+      if (pairBonds.length > 2) {
+        pairBonds
+          .filter((b) => !firstTwo.includes(b))
+          .forEach((b) => {
+          const eA = a.electrons.find((e) => e.id === b.eAId);
+          const eC = c.electrons.find((e) => e.id === b.eBId);
+          if (!eA || !eC) return;
+
+          // Push extra bonds slightly away from the central
+          // double‑bond region so they visually rejoin the
+          // lone‑pair area instead of appearing as a third
+          // shared electron.
+          const extraOffset = 0.9;
+          eA.angleOffset = normalizeAngle(angleAC + extraOffset - eA.baseAngle);
+          eC.angleOffset = normalizeAngle(angleCA - extraOffset - eC.baseAngle);
+        });
+      }
+    } else {
+      // Single bond: align electrons exactly on bond axis.
+      pairBonds.forEach((b) => {
+        const eA = a.electrons.find((e) => e.id === b.eAId);
+        const eC = c.electrons.find((e) => e.id === b.eBId);
+        if (!eA || !eC) return;
+
+        eA.angleOffset = normalizeAngle(angleAC - eA.baseAngle);
+        eC.angleOffset = normalizeAngle(angleCA - eC.baseAngle);
+      });
+    }
   });
 
   // After aligning bonding electrons, redistribute all other electrons
