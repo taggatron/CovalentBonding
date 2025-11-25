@@ -107,8 +107,21 @@ function createLayout() {
     card.appendChild(symbol);
     card.appendChild(meta);
 
+    // Desktop drag and drop
     card.addEventListener('dragstart', (e) => {
       e.dataTransfer.setData('text/plain', JSON.stringify(el));
+    });
+
+    // Mobile / touch: on tap or press in palette, spawn the
+    // element at a default position near the center so it can
+    // immediately be dragged with the main pointer controls.
+    card.addEventListener('pointerdown', (e) => {
+      // Only treat primary pointer to avoid multi-touch issues.
+      if (e.button !== 0) return;
+      const rect = mainPanel.getBoundingClientRect();
+      const x = rect.left + rect.width * 0.55;
+      const y = rect.top + rect.height * 0.55;
+      spawnAtomFromElement(el, x, y);
     });
 
     palette.appendChild(card);
