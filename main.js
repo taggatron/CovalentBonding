@@ -205,42 +205,55 @@ function updateBonds() {
       const baseAngleA = Math.atan2(b.y - a.y, b.x - a.x);
       const baseAngleB = Math.atan2(a.y - b.y, a.x - b.x);
 
-      // Find the best available (unused) electron on each atom that
-      // points roughly towards the other atom along the bond axis.
-      const availableA = a.electrons.filter((e) => !usedElectronIds.has(e.id));
-      const availableB = b.electrons.filter((e) => !usedElectronIds.has(e.id));
-      if (availableA.length === 0 || availableB.length === 0) continue;
+      // Determine desired number of bond pairs between this atom pair.
+      const isCOPair =
+        (a.element.symbol === 'C' && b.element.symbol === 'O') ||
+        (a.element.symbol === 'O' && b.element.symbol === 'C');
+      const isOOPair = a.element.symbol === 'O' && b.element.symbol === 'O';
+      const desiredPairs = isCOPair || isOOPair ? 2 : 1;
 
-      const candidatesA = availableA
-        .map((e) => ({ atom: a, e }))
-        .sort(
-          (p, q) =>
-            Math.abs(normalizeAngle(p.e.baseAngle - baseAngleA)) -
-            Math.abs(normalizeAngle(q.e.baseAngle - baseAngleA))
-        );
-      const candidatesB = availableB
-        .map((e) => ({ atom: b, e }))
-        .sort(
-          (p, q) =>
-            Math.abs(normalizeAngle(p.e.baseAngle - baseAngleB)) -
-            Math.abs(normalizeAngle(q.e.baseAngle - baseAngleB))
-        );
+      // Attempt to create up to desiredPairs separate electron pairs
+      // for this atom pair, respecting available valence electrons.
+      for (let pairIndex = 0; pairIndex < desiredPairs; pairIndex++) {
+        const availableA = a.electrons.filter((e) => !usedElectronIds.has(e.id));
+        const availableB = b.electrons.filter((e) => !usedElectronIds.has(e.id));
+        if (availableA.length === 0 || availableB.length === 0) break;
 
-      const eA = candidatesA[0].e;
-      const eB = candidatesB[0].e;
+        const candidatesA = availableA
+          .map((e) => ({ atom: a, e }))
+          .sort(
+            (p, q) =>
+              Math.abs(normalizeAngle(p.e.baseAngle - baseAngleA)) -
+              Math.abs(normalizeAngle(q.e.baseAngle - baseAngleA))
+          );
+        const candidatesB = availableB
+          .map((e) => ({ atom: b, e }))
+          .sort(
+            (p, q) =>
+              Math.abs(normalizeAngle(p.e.baseAngle - baseAngleB)) -
+              Math.abs(normalizeAngle(q.e.baseAngle - baseAngleB))
+          );
 
-      const posA = electronPosition(a, eA);
-      const posB = electronPosition(b, eB);
-      if (distance(posA, posB) <= maxPairDistance) {
-        bonds.push({
-          id: `${a.id}-${b.id}-${eA.id}-${eB.id}`,
-          aId: a.id,
-          bId: b.id,
-          eAId: eA.id,
-          eBId: eB.id,
-        });
-        usedElectronIds.add(eA.id);
-        usedElectronIds.add(eB.id);
+        const eA = candidatesA[0].e;
+        const eB = candidatesB[0].e;
+
+        const posA = electronPosition(a, eA);
+        const posB = electronPosition(b, eB);
+        if (distance(posA, posB) <= maxPairDistance) {
+          bonds.push({
+            id: `${a.id}-${b.id}-${eA.id}-${eB.id}`,
+            aId: a.id,
+            bId: b.id,
+            eAId: eA.id,
+            eBId: eB.id,
+          });
+          usedElectronIds.add(eA.id);
+          usedElectronIds.add(eB.id);
+        } else {
+          // If even the best candidate pair is too far, stop
+          // trying further pairs for this atom pair.
+          break;
+        }
       }
     }
   }
